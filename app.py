@@ -4,30 +4,15 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 import io
+import os
 
 st.set_page_config(page_title="SCC Risk Explorer", layout="wide")
 st.title("📊 Stress Corrosion Cracking (SCC) Risk Dashboard")
 
-# 1️⃣ Load and clean data
-@st.cache_data
-def load_data():
-    url = "https://raw.githubusercontent.com/deepakmahawar150620-beep/SCC_Pawan/main/Pipeline_data.xlsx"
-    df = pd.read_excel(url, engine="openpyxl")
-    df.columns = df.columns.str.strip()
+DATA_CACHE_PATH = "cached_processed_data.parquet"
+TOP50_CACHE_PATH = "cached_top50.parquet"
 
-    # Clean and convert
-    df['OFF PSP (VE V)'] = pd.to_numeric(df['OFF PSP (VE V)'], errors='coerce').abs().fillna(0)
-    hs = pd.to_numeric(df['Hoop stress% of SMYS'].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
-    if hs.max() < 10: hs *= 100
-    df['Hoop stress% of SMYS'] = hs
-    df['Distance from Pump(KM)'] = pd.to_numeric(df.get('Distance from Pump(KM)', 0), errors='coerce').fillna(1e6)
-    df['Pipe Age'] = pd.to_numeric(df.get('Pipe Age', 0), errors='coerce').fillna(0)
-    df['Temperature'] = pd.to_numeric(df.get('Temperature', 0), errors='coerce').fillna(0)
-    df['Soil Resistivity (Ω-cm)'] = pd.to_numeric(df.get('Soil Resistivity (Ω-cm)', 0), errors='coerce').fillna(1e9)
-    df['CoatingType'] = df.get('CoatingType', '').astype(str)
-    return df
-
-# 2️⃣ Flag SCC criteria
+# --- Risk and Flags ---
 def flag_criteria(df):
     return pd.DataFrame({
         'Stress>60': (df['Hoop stress% of SMYS'] > 60).astype(int),
@@ -39,7 +24,6 @@ def flag_criteria(df):
         'OFFPSP>−1.2V': (df['OFF PSP (VE V)'] > -1.2).astype(int)
     })
 
-# 3️⃣ Compute risk score
 def compute_risk_score(df):
     flags = flag_criteria(df)
     hs = df['Hoop stress% of SMYS'] / 100.0
@@ -51,10 +35,23 @@ def compute_risk_score(df):
     score = hs * w['hs'] + psp * w['psp'] + dist_norm * w['dist'] + soil_norm * w['soil']
     return score, flags
 
-# 4️⃣ Full scoring + Top 50
-@st.cache_data
-def get_all_data():
-    df = load_data()
+# --- Read and Clean Data ---
+def clean_data(df):
+    df.columns = df.columns.str.strip()
+    df['OFF PSP (VE V)'] = pd.to_numeric(df['OFF PSP (VE V)'], errors='coerce').abs().fillna(0)
+    hs = pd.to_numeric(df['Hoop stress% of SMYS'].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
+    if hs.max() < 10: hs *= 100
+    df['Hoop stress% of SMYS'] = hs
+    df['Distance from Pump(KM)'] = pd.to_numeric(df.get('Distance from Pump(KM)', 0), errors='coerce').fillna(1e6)
+    df['Pipe Age'] = pd.to_numeric(df.get('Pipe Age', 0), errors='coerce').fillna(0)
+    df['Temperature'] = pd.to_numeric(df.get('Temperature', 0), errors='coerce').fillna(0)
+    df['Soil Resistivity (Ω-cm)'] = pd.to_numeric(df.get('Soil Resistivity (Ω-cm)', 0), errors='coerce').fillna(1e9)
+    df['CoatingType'] = df.get('CoatingType', '').astype(str)
+    return df
+
+# --- Process Full Dataset ---
+def process_data(df):
+    df = clean_data(df)
     risk_score, flags = compute_risk_score(df)
     df = pd.concat([df, flags], axis=1)
     df['RiskScore'] = risk_score
@@ -63,23 +60,49 @@ def get_all_data():
     top50 = df.sort_values(['RiskScore','Hoop stress% of SMYS','OFF PSP (VE V)'], ascending=[False, False, False]).head(50)
     return df, top50
 
-# 5️⃣ Load processed data
-full_df, top50_df = get_all_data()
+# --- Upload Excel ---
+uploaded_file = st.file_uploader("📤 Upload Excel File", type=["xlsx"])
+if uploaded_file:
+    df = pd.read_excel(uploaded_file, engine="openpyxl")
+    processed_df, top50_df = process_data(df)
+    
+    # Save to disk for caching
+    processed_df.to_parquet(DATA_CACHE_PATH)
+    top50_df.to_parquet(TOP50_CACHE_PATH)
 
-# 6️⃣ Select parameter to plot
+    st.session_state['processed_df'] = processed_df
+    st.session_state['top50_df'] = top50_df
+    st.success("✅ New file uploaded and processed.")
+elif os.path.exists(DATA_CACHE_PATH) and os.path.exists(TOP50_CACHE_PATH):
+    # Load from disk (cloud-like memory)
+    processed_df = pd.read_parquet(DATA_CACHE_PATH)
+    top50_df = pd.read_parquet(TOP50_CACHE_PATH)
+
+    st.session_state['processed_df'] = processed_df
+    st.session_state['top50_df'] = top50_df
+    st.info("✅ Loaded cached data.")
+else:
+    st.warning("📄 Please upload an Excel file to begin.")
+    st.stop()
+
+# --- Main Dashboard ---
+df = st.session_state['processed_df']
+top50 = st.session_state['top50_df']
+
+# --- Plot Selection ---
 param = st.selectbox("📌 Select parameter to plot vs Stationing:", [
     'Hoop stress% of SMYS', 'OFF PSP (VE V)', 'Soil Resistivity (Ω-cm)', 'Distance from Pump(KM)', 'Pipe Age'
 ])
 
-# 7️⃣ Build plot
+# --- Plotting ---
 fig = go.Figure()
 fig.add_trace(go.Scatter(
-    x=full_df['Stationing (m)'],
-    y=full_df[param],
+    x=df['Stationing (m)'],
+    y=df[param],
     mode='markers',
     marker=dict(
         size=6,
-        color=full_df['RiskScore'],
+        color=df['RiskScore'],
         colorscale='Reds',
         showscale=True,
         colorbar=dict(title='Risk Score')
@@ -94,15 +117,15 @@ fig.update_layout(
 )
 st.plotly_chart(fig, use_container_width=True)
 
-# 8️⃣ Show top 50 table
+# --- Table Display ---
 st.subheader("🔥 Top 50 High-Risk Locations")
-st.dataframe(top50_df[['Stationing (m)', 'RiskScore', 'RiskCategory',
-                       'Hoop stress% of SMYS', 'OFF PSP (VE V)',
-                       'Distance from Pump(KM)', 'Soil Resistivity (Ω-cm)',
-                       'Pipe Age', 'CoatingType']], use_container_width=True)
+st.dataframe(top50[['Stationing (m)', 'RiskScore', 'RiskCategory',
+                    'Hoop stress% of SMYS', 'OFF PSP (VE V)',
+                    'Distance from Pump(KM)', 'Soil Resistivity (Ω-cm)',
+                    'Pipe Age', 'CoatingType']], use_container_width=True)
 
-# 9️⃣ Download buttons
-csv = top50_df.to_csv(index=False).encode('utf-8')
+# --- Downloads ---
+csv = top50.to_csv(index=False).encode('utf-8')
 st.download_button("⬇️ Download Top 50 CSV", csv, "Top_50_SCC_Risks.csv", "text/csv")
 
 html_buffer = io.StringIO()
