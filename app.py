@@ -9,17 +9,18 @@ import os
 st.set_page_config(page_title="SCC Risk Explorer", layout="wide")
 st.title("📊 Stress Corrosion Cracking (SCC) Risk Dashboard")
 
+# Cloud-like cache paths
 DATA_CACHE_PATH = "cached_processed_data.parquet"
 TOP50_CACHE_PATH = "cached_top50.parquet"
 
-# --- Risk and Flags ---
+# ---------- Risk and Flags Functions ----------
 def flag_criteria(df):
     return pd.DataFrame({
         'Stress>60': (df['Hoop stress% of SMYS'] > 60).astype(int),
         'Age>10yrs': (df['Pipe Age'] > 10).astype(int),
         'Temp>38C': (df['Temperature'] > 38).astype(int),
         'Dist≤32km': (df['Distance from Pump(KM)'] <= 32).astype(int),
-        'CoatingHighRisk': (~df['CoatingType'].str.upper().isin(['FBE','LIQUID EPOXY'])).astype(int),
+        'CoatingHighRisk': (~df['CoatingType'].str.upper().isin(['FBE', 'LIQUID EPOXY'])).astype(int),
         'Soil<5000': (df['Soil Resistivity (Ω-cm)'] < 5000).astype(int),
         'OFFPSP>−1.2V': (df['OFF PSP (VE V)'] > -1.2).astype(int)
     })
@@ -35,7 +36,7 @@ def compute_risk_score(df):
     score = hs * w['hs'] + psp * w['psp'] + dist_norm * w['dist'] + soil_norm * w['soil']
     return score, flags
 
-# --- Read and Clean Data ---
+# ---------- Data Cleaning and Processing ----------
 def clean_data(df):
     df.columns = df.columns.str.strip()
     df['OFF PSP (VE V)'] = pd.to_numeric(df['OFF PSP (VE V)'], errors='coerce').abs().fillna(0)
@@ -49,7 +50,6 @@ def clean_data(df):
     df['CoatingType'] = df.get('CoatingType', '').astype(str)
     return df
 
-# --- Process Full Dataset ---
 def process_data(df):
     df = clean_data(df)
     risk_score, flags = compute_risk_score(df)
@@ -57,44 +57,45 @@ def process_data(df):
     df['RiskScore'] = risk_score
     df['FlagsSum'] = flags.sum(axis=1)
     df['RiskCategory'] = df['FlagsSum'].apply(lambda x: 'High' if x >= 4 else ('Medium' if x >= 2 else 'Low'))
-    top50 = df.sort_values(['RiskScore','Hoop stress% of SMYS','OFF PSP (VE V)'], ascending=[False, False, False]).head(50)
+    top50 = df.sort_values(['RiskScore', 'Hoop stress% of SMYS', 'OFF PSP (VE V)'], ascending=[False, False, False]).head(50)
     return df, top50
 
-# --- Upload Excel ---
-uploaded_file = st.file_uploader("📤 Upload Excel File", type=["xlsx"])
-if uploaded_file:
-    df = pd.read_excel(uploaded_file, engine="openpyxl")
-    processed_df, top50_df = process_data(df)
-    
-    # Save to disk for caching
-    processed_df.to_parquet(DATA_CACHE_PATH)
-    top50_df.to_parquet(TOP50_CACHE_PATH)
+# ---------- Excel Upload Trigger ----------
+st.subheader("📥 Excel Data Upload")
+if st.button("📤 Upload/Replace Excel File"):
+    uploaded_file = st.file_uploader("Choose Excel file (.xlsx)", type=["xlsx"], key="file_uploader")
+    if uploaded_file:
+        df = pd.read_excel(uploaded_file, engine="openpyxl")
+        processed_df, top50_df = process_data(df)
 
-    st.session_state['processed_df'] = processed_df
-    st.session_state['top50_df'] = top50_df
-    st.success("✅ New file uploaded and processed.")
-elif os.path.exists(DATA_CACHE_PATH) and os.path.exists(TOP50_CACHE_PATH):
-    # Load from disk (cloud-like memory)
-    processed_df = pd.read_parquet(DATA_CACHE_PATH)
-    top50_df = pd.read_parquet(TOP50_CACHE_PATH)
+        # Save to disk for caching
+        processed_df.to_parquet(DATA_CACHE_PATH)
+        top50_df.to_parquet(TOP50_CACHE_PATH)
 
-    st.session_state['processed_df'] = processed_df
-    st.session_state['top50_df'] = top50_df
-    st.info("✅ Loaded cached data.")
+        st.session_state['processed_df'] = processed_df
+        st.session_state['top50_df'] = top50_df
+        st.success("✅ File uploaded, processed, and cached.")
+        st.stop()
+    else:
+        st.warning("⚠️ Please choose a file after clicking the button.")
+        st.stop()
+
+# ---------- Load Cached Data if Available ----------
+if os.path.exists(DATA_CACHE_PATH) and os.path.exists(TOP50_CACHE_PATH):
+    df = pd.read_parquet(DATA_CACHE_PATH)
+    top50 = pd.read_parquet(TOP50_CACHE_PATH)
+    st.session_state['processed_df'] = df
+    st.session_state['top50_df'] = top50
+    st.info("✅ Using previously saved results (fast load).")
 else:
-    st.warning("📄 Please upload an Excel file to begin.")
+    st.warning("🚫 No uploaded Excel file found. Click the button above to upload.")
     st.stop()
 
-# --- Main Dashboard ---
-df = st.session_state['processed_df']
-top50 = st.session_state['top50_df']
-
-# --- Plot Selection ---
+# ---------- Visualization ----------
 param = st.selectbox("📌 Select parameter to plot vs Stationing:", [
     'Hoop stress% of SMYS', 'OFF PSP (VE V)', 'Soil Resistivity (Ω-cm)', 'Distance from Pump(KM)', 'Pipe Age'
 ])
 
-# --- Plotting ---
 fig = go.Figure()
 fig.add_trace(go.Scatter(
     x=df['Stationing (m)'],
@@ -117,14 +118,13 @@ fig.update_layout(
 )
 st.plotly_chart(fig, use_container_width=True)
 
-# --- Table Display ---
+# ---------- Table & Downloads ----------
 st.subheader("🔥 Top 50 High-Risk Locations")
 st.dataframe(top50[['Stationing (m)', 'RiskScore', 'RiskCategory',
                     'Hoop stress% of SMYS', 'OFF PSP (VE V)',
                     'Distance from Pump(KM)', 'Soil Resistivity (Ω-cm)',
                     'Pipe Age', 'CoatingType']], use_container_width=True)
 
-# --- Downloads ---
 csv = top50.to_csv(index=False).encode('utf-8')
 st.download_button("⬇️ Download Top 50 CSV", csv, "Top_50_SCC_Risks.csv", "text/csv")
 
