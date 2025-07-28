@@ -1,90 +1,110 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 import io
 
-# Set page config
-st.set_page_config(page_title="SCC Graph Explorer", layout="centered")
-st.title("📈 SCC Risk Graph Explorer")
+st.set_page_config(page_title="SCC Risk Explorer", layout="wide")
+st.title("📊 Stress Corrosion Cracking (SCC) Risk Dashboard")
 
-# ✅ Load Excel only once using cache
+# 1️⃣ Load and clean data
 @st.cache_data
 def load_data():
     url = "https://raw.githubusercontent.com/deepakmahawar150620-beep/SCC_Pawan/main/Pipeline_data.xlsx"
     df = pd.read_excel(url, engine="openpyxl")
-    df.columns = [col.strip() for col in df.columns]
+    df.columns = df.columns.str.strip()
 
-    if 'OFF PSP (VE V)' in df.columns:
-        df['OFF PSP (VE V)'] = df['OFF PSP (VE V)'].astype(float).abs()
-
-    if 'Hoop stress% of SMYS' in df.columns:
-        df['Hoop stress% of SMYS'] = df['Hoop stress% of SMYS'].astype(str).str.replace('%', '').astype(float)
-        if df['Hoop stress% of SMYS'].max() < 10:
-            df['Hoop stress% of SMYS'] *= 100
-
+    # Clean and convert
+    df['OFF PSP (VE V)'] = pd.to_numeric(df['OFF PSP (VE V)'], errors='coerce').abs().fillna(0)
+    hs = pd.to_numeric(df['Hoop stress% of SMYS'].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
+    if hs.max() < 10: hs *= 100
+    df['Hoop stress% of SMYS'] = hs
+    df['Distance from Pump(KM)'] = pd.to_numeric(df.get('Distance from Pump(KM)', 0), errors='coerce').fillna(1e6)
+    df['Pipe Age'] = pd.to_numeric(df.get('Pipe Age', 0), errors='coerce').fillna(0)
+    df['Temperature'] = pd.to_numeric(df.get('Temperature', 0), errors='coerce').fillna(0)
+    df['Soil Resistivity (Ω-cm)'] = pd.to_numeric(df.get('Soil Resistivity (Ω-cm)', 0), errors='coerce').fillna(1e9)
+    df['CoatingType'] = df.get('CoatingType', '').astype(str)
     return df
 
-df = load_data()  # 🚀 Fast after first run
+# 2️⃣ Flag SCC criteria
+def flag_criteria(df):
+    return pd.DataFrame({
+        'Stress>60': (df['Hoop stress% of SMYS'] > 60).astype(int),
+        'Age>10yrs': (df['Pipe Age'] > 10).astype(int),
+        'Temp>38C': (df['Temperature'] > 38).astype(int),
+        'Dist≤32km': (df['Distance from Pump(KM)'] <= 32).astype(int),
+        'CoatingHighRisk': (~df['CoatingType'].str.upper().isin(['FBE','LIQUID EPOXY'])).astype(int),
+        'Soil<5000': (df['Soil Resistivity (Ω-cm)'] < 5000).astype(int),
+        'OFFPSP>−1.2V': (df['OFF PSP (VE V)'] > -1.2).astype(int)
+    })
 
-# Setup parameter dropdown
-plot_columns = {
-    'Depth (mm)': 'Depth (mm)',
-    'OFF PSP (VE V)': 'OFF PSP (-ve Volt)',
-    'Soil Resistivity (Ω-cm)': 'Soil Resistivity (Ω-cm)',
-    'Distance from Pump(KM)': 'Distance from Pump (KM)',
-    'Operating Pr.': 'Operating Pressure',
-    'Remaining Thickness(mm)': 'Remaining Thickness (mm)',
-    'Hoop stress% of SMYS': 'Hoop Stress (% of SMYS)',
-    'Temperature': 'Temperature (°C)',
-    'Pipe Age': 'Pipe Age'
-}
+# 3️⃣ Compute risk score
+def compute_risk_score(df):
+    flags = flag_criteria(df)
+    hs = df['Hoop stress% of SMYS'] / 100.0
+    psp = 1 - ((df['OFF PSP (VE V)'] + 2) / 2)
+    max_dist = df['Distance from Pump(KM)'].replace(0, np.nan).max() or 1
+    dist_norm = (max_dist - df['Distance from Pump(KM)']) / max_dist
+    soil_norm = 1 - np.clip(df['Soil Resistivity (Ω-cm)'] / 10000, 0, 1)
+    w = {'hs': 0.6, 'psp': 0.3, 'dist': 0.2, 'soil': 0.1}
+    score = hs * w['hs'] + psp * w['psp'] + dist_norm * w['dist'] + soil_norm * w['soil']
+    return score, flags
 
-selected_col = st.selectbox("Select a parameter to compare with Stationing:", list(plot_columns.keys()))
-label = plot_columns[selected_col]
+# 4️⃣ Full scoring + Top 50
+@st.cache_data
+def get_all_data():
+    df = load_data()
+    risk_score, flags = compute_risk_score(df)
+    df = pd.concat([df, flags], axis=1)
+    df['RiskScore'] = risk_score
+    df['FlagsSum'] = flags.sum(axis=1)
+    df['RiskCategory'] = df['FlagsSum'].apply(lambda x: 'High' if x >= 4 else ('Medium' if x >= 2 else 'Low'))
+    top50 = df.sort_values(['RiskScore','Hoop stress% of SMYS','OFF PSP (VE V)'], ascending=[False, False, False]).head(50)
+    return df, top50
 
-# 🧠 Build Plotly graph
+# 5️⃣ Load processed data
+full_df, top50_df = get_all_data()
+
+# 6️⃣ Select parameter to plot
+param = st.selectbox("📌 Select parameter to plot vs Stationing:", [
+    'Hoop stress% of SMYS', 'OFF PSP (VE V)', 'Soil Resistivity (Ω-cm)', 'Distance from Pump(KM)', 'Pipe Age'
+])
+
+# 7️⃣ Build plot
 fig = go.Figure()
 fig.add_trace(go.Scatter(
-    x=df['Stationing (m)'],
-    y=df[selected_col],
-    mode='lines+markers',
-    name=label,
-    line=dict(width=2),
-    marker=dict(size=6)
+    x=full_df['Stationing (m)'],
+    y=full_df[param],
+    mode='markers',
+    marker=dict(
+        size=6,
+        color=full_df['RiskScore'],
+        colorscale='Reds',
+        showscale=True,
+        colorbar=dict(title='Risk Score')
+    ),
+    name=param
 ))
-
-# 🧱 Threshold lines
-if label == 'Hoop Stress (% of SMYS)':
-    fig.add_shape(type='line', x0=df['Stationing (m)'].min(), x1=df['Stationing (m)'].max(),
-                  y0=60, y1=60, line=dict(color='red', dash='dash'))
-
-elif label == 'OFF PSP (-ve Volt)':
-    for yval in [0.85, 1.2]:
-        fig.add_shape(type='line', x0=df['Stationing (m)'].min(), x1=df['Stationing (m)'].max(),
-                      y0=yval, y1=yval, line=dict(color='red', dash='dash'))
-
-# 🎨 Layout
 fig.update_layout(
-    title=f"Stationing vs {label}",
+    title=f"📈 Stationing vs {param} (Color = Risk Score)",
     xaxis_title="Stationing (m)",
-    yaxis_title=label,
-    height=500,
-    template='plotly_white',
-    xaxis=dict(showline=True, linecolor='black', mirror=True),
-    yaxis=dict(showline=True, linecolor='black', mirror=True, gridcolor='lightgray'),
-    margin=dict(l=60, r=40, t=50, b=60)
+    yaxis_title=param,
+    template='plotly_white'
 )
-
-# 📈 Show graph
 st.plotly_chart(fig, use_container_width=True)
 
-# 💾 HTML graph download
+# 8️⃣ Show top 50 table
+st.subheader("🔥 Top 50 High-Risk Locations")
+st.dataframe(top50_df[['Stationing (m)', 'RiskScore', 'RiskCategory',
+                       'Hoop stress% of SMYS', 'OFF PSP (VE V)',
+                       'Distance from Pump(KM)', 'Soil Resistivity (Ω-cm)',
+                       'Pipe Age', 'CoatingType']], use_container_width=True)
+
+# 9️⃣ Download buttons
+csv = top50_df.to_csv(index=False).encode('utf-8')
+st.download_button("⬇️ Download Top 50 CSV", csv, "Top_50_SCC_Risks.csv", "text/csv")
+
 html_buffer = io.StringIO()
 pio.write_html(fig, file=html_buffer, include_plotlyjs='cdn')
-st.download_button(
-    label="⬇️ Download High-Quality Graph as HTML",
-    data=html_buffer.getvalue(),
-    file_name=f"{label.replace(' ', '_')}_graph.html",
-    mime="text/html"
-)
+st.download_button("⬇️ Download Graph as HTML", html_buffer.getvalue(), "SCC_Graph.html", "text/html")
