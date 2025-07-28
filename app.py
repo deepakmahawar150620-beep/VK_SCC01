@@ -36,7 +36,6 @@ def process_excel(df):
     df['Soil Resistivity (Ω-cm)'] = pd.to_numeric(df.get('Soil Resistivity (Ω-cm)', 0), errors='coerce').fillna(1e9)
     df['CoatingType'] = df.get('CoatingType', '').astype(str)
 
-    # Flags
     flags = pd.DataFrame({
         'Stress>60': (df['Hoop stress% of SMYS'] > 60).astype(int),
         'Age>10yrs': (df['Pipe Age'] > 10).astype(int),
@@ -47,7 +46,6 @@ def process_excel(df):
         'OFFPSP>−1.2V': (df['OFF PSP (VE V)'] > -1.2).astype(int)
     })
 
-    # Risk score
     hs = df['Hoop stress% of SMYS'] / 100.0
     psp = 1 - ((df['OFF PSP (VE V)'] + 2) / 2)
     max_dist = df['Distance from Pump(KM)'].replace(0, np.nan).max() or 1
@@ -70,11 +68,9 @@ if uploaded_file:
     df = pd.read_excel(uploaded_file, engine="openpyxl")
     full_df, top50_df = process_excel(df)
 
-    # Save to disk
     full_df.to_parquet(CACHE_DATA_FILE)
     top50_df.to_parquet(CACHE_TOP50_FILE)
 
-    # Save to session state (fast access)
     st.session_state["data"] = full_df
     st.session_state["top50"] = top50_df
     st.success("✅ File uploaded and processed.")
@@ -94,33 +90,57 @@ else:
     st.stop()
 
 # --------------------------
-# 📊 Plotting Section
+# 📊 Graph (Revised)
 # --------------------------
-param = st.selectbox("📌 Select parameter to plot vs Stationing:", [
-    'Hoop stress% of SMYS', 'OFF PSP (VE V)', 'Soil Resistivity (Ω-cm)', 'Distance from Pump(KM)', 'Pipe Age'
-])
+plot_columns = {
+    'Depth (mm)': 'Depth (mm)',
+    'OFF PSP (VE V)': 'OFF PSP (-ve Volt)',
+    'Soil Resistivity (Ω-cm)': 'Soil Resistivity (Ω-cm)',
+    'Distance from Pump(KM)': 'Distance from Pump (KM)',
+    'Operating Pr.': 'Operating Pressure',
+    'Remaining Thickness(mm)': 'Remaining Thickness (mm)',
+    'Hoop stress% of SMYS': 'Hoop Stress (% of SMYS)',
+    'Temperature': 'Temperature (°C)',
+    'Pipe Age': 'Pipe Age'
+}
+
+selected_col = st.selectbox("Select a parameter to compare with Stationing:", list(plot_columns.keys()))
+label = plot_columns[selected_col]
 
 fig = go.Figure()
 fig.add_trace(go.Scatter(
     x=full_df['Stationing (m)'],
-    y=full_df[param],
-    mode='markers',
-    marker=dict(
-        size=6,
-        color=full_df['RiskScore'],
-        colorscale='Reds',
-        showscale=True,
-        colorbar=dict(title='Risk Score')
-    ),
-    name=param
+    y=full_df[selected_col],
+    mode='lines+markers',
+    name=label,
+    line=dict(width=2),
+    marker=dict(size=6)
 ))
+
+if label == 'Hoop Stress (% of SMYS)':
+    fig.add_shape(type='line', x0=full_df['Stationing (m)'].min(), x1=full_df['Stationing (m)'].max(),
+                  y0=60, y1=60, line=dict(color='red', dash='dash'))
+elif label == 'OFF PSP (-ve Volt)':
+    for yval in [0.85, 1.2]:
+        fig.add_shape(type='line', x0=full_df['Stationing (m)'].min(), x1=full_df['Stationing (m)'].max(),
+                      y0=yval, y1=yval, line=dict(color='red', dash='dash'))
+
 fig.update_layout(
-    title=f"📈 Stationing vs {param} (Color = Risk Score)",
+    title=f"Stationing vs {label}",
     xaxis_title="Stationing (m)",
-    yaxis_title=param,
-    template='plotly_white'
+    yaxis_title=label,
+    height=500,
+    template='plotly_white',
+    xaxis=dict(showline=True, linecolor='black', mirror=True),
+    yaxis=dict(showline=True, linecolor='black', mirror=True, gridcolor='lightgray'),
+    margin=dict(l=60, r=40, t=50, b=60)
 )
+
 st.plotly_chart(fig, use_container_width=True)
+
+html_buffer = io.StringIO()
+pio.write_html(fig, file=html_buffer, include_plotlyjs='cdn')
+st.download_button("⬇️ Download High-Quality Graph as HTML", html_buffer.getvalue(), f"{label.replace(' ', '_')}_graph.html", "text/html")
 
 # --------------------------
 # 📄 Table Section
@@ -136,7 +156,3 @@ st.dataframe(top50_df[['Stationing (m)', 'RiskScore', 'RiskCategory',
 # --------------------------
 csv = top50_df.to_csv(index=False).encode('utf-8')
 st.download_button("⬇️ Download Top 50 CSV", csv, "Top_50_SCC_Risks.csv", "text/csv")
-
-html_buffer = io.StringIO()
-pio.write_html(fig, file=html_buffer, include_plotlyjs='cdn')
-st.download_button("⬇️ Download Graph as HTML", html_buffer.getvalue(), "SCC_Graph.html", "text/html")
