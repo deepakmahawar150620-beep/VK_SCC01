@@ -12,7 +12,7 @@ st.title("📊 Stress Corrosion Cracking (SCC) Risk Dashboard")
 DATA_CACHE_PATH = "cached_processed_data.parquet"
 TOP50_CACHE_PATH = "cached_top50.parquet"
 
-# ---------- Risk and Flags ----------
+# ---------- Risk Functions ----------
 def flag_criteria(df):
     return pd.DataFrame({
         'Stress>60': (df['Hoop stress% of SMYS'] > 60).astype(int),
@@ -35,7 +35,7 @@ def compute_risk_score(df):
     score = hs * w['hs'] + psp * w['psp'] + dist_norm * w['dist'] + soil_norm * w['soil']
     return score, flags
 
-# ---------- Data Cleaning ----------
+# ---------- Clean and Process ----------
 def clean_data(df):
     df.columns = df.columns.str.strip()
     df['OFF PSP (VE V)'] = pd.to_numeric(df['OFF PSP (VE V)'], errors='coerce').abs().fillna(0)
@@ -59,44 +59,43 @@ def process_data(df):
     top50 = df.sort_values(['RiskScore', 'Hoop stress% of SMYS', 'OFF PSP (VE V)'], ascending=[False, False, False]).head(50)
     return df, top50
 
-# ---------- Upload Excel Only When Button is Clicked ----------
-if 'show_upload' not in st.session_state:
-    st.session_state.show_upload = False
+# ---------- Button to show uploader ----------
+if 'show_uploader' not in st.session_state:
+    st.session_state['show_uploader'] = False
 
 if st.button("📤 Upload or Change Excel File"):
-    st.session_state.show_upload = True
+    st.session_state['show_uploader'] = True
 
-if st.session_state.show_upload:
-    uploaded_file = st.file_uploader("Choose Excel file (.xlsx)", type=["xlsx"])
+# ---------- Show uploader only if requested ----------
+if st.session_state['show_uploader']:
+    uploaded_file = st.file_uploader("📂 Upload Excel File (.xlsx)", type=["xlsx"])
     if uploaded_file:
         df = pd.read_excel(uploaded_file, engine="openpyxl")
         processed_df, top50_df = process_data(df)
 
-        # Save for reuse
+        # Save to disk for reuse
         processed_df.to_parquet(DATA_CACHE_PATH)
         top50_df.to_parquet(TOP50_CACHE_PATH)
 
-        st.session_state['processed_df'] = processed_df
-        st.session_state['top50_df'] = top50_df
-        st.success("✅ Excel uploaded and processed.")
-        st.session_state.show_upload = False
+        # Reset uploader flag
+        st.session_state['show_uploader'] = False
+        st.success("✅ Excel file processed and saved.")
         st.experimental_rerun()
     else:
         st.stop()
 
-# ---------- Load Cached Data if Available ----------
+# ---------- Load cached data if available ----------
 if os.path.exists(DATA_CACHE_PATH) and os.path.exists(TOP50_CACHE_PATH):
     df = pd.read_parquet(DATA_CACHE_PATH)
     top50 = pd.read_parquet(TOP50_CACHE_PATH)
-    st.session_state['processed_df'] = df
-    st.session_state['top50_df'] = top50
 else:
-    st.warning("🚫 No Excel uploaded yet. Click the button above to upload.")
+    st.warning("⚠️ No Excel file found. Please click 'Upload or Change Excel File' to upload one.")
     st.stop()
 
-# ---------- Visualization ----------
+# ---------- Plot ----------
 param = st.selectbox("📌 Select parameter to plot vs Stationing:", [
-    'Hoop stress% of SMYS', 'OFF PSP (VE V)', 'Soil Resistivity (Ω-cm)', 'Distance from Pump(KM)', 'Pipe Age'
+    'Hoop stress% of SMYS', 'OFF PSP (VE V)', 'Soil Resistivity (Ω-cm)',
+    'Distance from Pump(KM)', 'Pipe Age'
 ])
 
 fig = go.Figure()
@@ -128,7 +127,7 @@ st.dataframe(top50[['Stationing (m)', 'RiskScore', 'RiskCategory',
                     'Distance from Pump(KM)', 'Soil Resistivity (Ω-cm)',
                     'Pipe Age', 'CoatingType']], use_container_width=True)
 
-# ---------- Downloads ----------
+# ---------- Download Buttons ----------
 csv = top50.to_csv(index=False).encode('utf-8')
 st.download_button("⬇️ Download Top 50 CSV", csv, "Top_50_SCC_Risks.csv", "text/csv")
 
