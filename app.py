@@ -4,94 +4,47 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 import io
-import os
 
-st.set_page_config(page_title="SCC Risk Explorer", layout="wide")
-st.title("📊 Stress Corrosion Cracking (SCC) Risk Dashboard")
+# Configure page
+st.set_page_config(page_title="📊 SCC Risk Graph Explorer", layout="centered")
+st.title("📈 SCC Risk Graph Explorer")
 
-# --------------------------
-# 🔄 Set up cache file paths
-# --------------------------
-CACHE_DATA_FILE = "data_cache.parquet"
-CACHE_TOP50_FILE = "top50_cache.parquet"
+# Upload Excel
+uploaded_file = st.file_uploader("📤 Upload Excel file (.xlsx)", type=["xlsx"])
 
-# --------------------------
-# 📤 Permanent uploader
-# --------------------------
-uploaded_file = st.file_uploader("📂 Upload Excel file", type=["xlsx"], help="Upload your pipeline data Excel file")
-
-# --------------------------
-# 🧠 Session & File Cache Logic
-# --------------------------
-def process_excel(df):
-    df.columns = df.columns.str.strip()
-    df['OFF PSP (VE V)'] = pd.to_numeric(df['OFF PSP (VE V)'], errors='coerce').abs().fillna(0)
-
-    hs = pd.to_numeric(df['Hoop stress% of SMYS'].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
-    if hs.max() < 10: hs *= 100
-    df['Hoop stress% of SMYS'] = hs
-    df['Distance from Pump(KM)'] = pd.to_numeric(df.get('Distance from Pump(KM)', 0), errors='coerce').fillna(1e6)
-    df['Pipe Age'] = pd.to_numeric(df.get('Pipe Age', 0), errors='coerce').fillna(0)
-    df['Temperature'] = pd.to_numeric(df.get('Temperature', 0), errors='coerce').fillna(0)
-    df['Soil Resistivity (Ω-cm)'] = pd.to_numeric(df.get('Soil Resistivity (Ω-cm)', 0), errors='coerce').fillna(1e9)
-    df['CoatingType'] = df.get('CoatingType', '').astype(str)
-
-    flags = pd.DataFrame({
-        'Stress>60': (df['Hoop stress% of SMYS'] > 60).astype(int),
-        'Age>10yrs': (df['Pipe Age'] > 10).astype(int),
-        'Temp>38C': (df['Temperature'] > 38).astype(int),
-        'Dist≤32km': (df['Distance from Pump(KM)'] <= 32).astype(int),
-        'CoatingHighRisk': (~df['CoatingType'].str.upper().isin(['FBE', 'LIQUID EPOXY'])).astype(int),
-        'Soil<5000': (df['Soil Resistivity (Ω-cm)'] < 5000).astype(int),
-        'OFFPSP>−1.2V': (df['OFF PSP (VE V)'] > -1.2).astype(int)
-    })
-
-    hs = df['Hoop stress% of SMYS'] / 100.0
-    psp = 1 - ((df['OFF PSP (VE V)'] + 2) / 2)
-    max_dist = df['Distance from Pump(KM)'].replace(0, np.nan).max() or 1
-    dist_norm = (max_dist - df['Distance from Pump(KM)']) / max_dist
-    soil_norm = 1 - np.clip(df['Soil Resistivity (Ω-cm)'] / 10000, 0, 1)
-    score = hs * 0.6 + psp * 0.3 + dist_norm * 0.2 + soil_norm * 0.1
-
-    df = pd.concat([df, flags], axis=1)
-    df['RiskScore'] = score
-    df['FlagsSum'] = flags.sum(axis=1)
-    df['RiskCategory'] = df['FlagsSum'].apply(lambda x: 'High' if x >= 4 else ('Medium' if x >= 2 else 'Low'))
-    top50 = df.sort_values(['RiskScore', 'Hoop stress% of SMYS', 'OFF PSP (VE V)'], ascending=[False, False, False]).head(50)
-
-    return df, top50
-
-# --------------------------
-# ⏫ Load from upload or cache
-# --------------------------
-if uploaded_file:
+# Read and cache data only when uploaded
+@st.cache_data(show_spinner=False)
+def load_excel_data(uploaded_file):
     df = pd.read_excel(uploaded_file, engine="openpyxl")
-    full_df, top50_df = process_excel(df)
+    df.columns = df.columns.str.strip()
+    return df
 
-    full_df.to_parquet(CACHE_DATA_FILE)
-    top50_df.to_parquet(CACHE_TOP50_FILE)
+# Load default if nothing uploaded
+@st.cache_data
+def load_default_data():
+    url = "https://raw.githubusercontent.com/deepakmahawar150620-beep/SCC_Pawan/main/Pipeline_data.xlsx"
+    df = pd.read_excel(url, engine="openpyxl")
+    df.columns = df.columns.str.strip()
+    return df
 
-    st.session_state["data"] = full_df
-    st.session_state["top50"] = top50_df
-    st.success("✅ File uploaded and processed.")
-    st.experimental_rerun()
-
-elif "data" in st.session_state and "top50" in st.session_state:
-    full_df = st.session_state["data"]
-    top50_df = st.session_state["top50"]
-
-elif os.path.exists(CACHE_DATA_FILE) and os.path.exists(CACHE_TOP50_FILE):
-    full_df = pd.read_parquet(CACHE_DATA_FILE)
-    top50_df = pd.read_parquet(CACHE_TOP50_FILE)
-    st.session_state["data"] = full_df
-    st.session_state["top50"] = top50_df
+# Load data
+if uploaded_file:
+    df = load_excel_data(uploaded_file)
+    st.success("✅ Uploaded file loaded successfully.")
 else:
-    st.warning("🟡 Please upload an Excel file to begin.")
-    st.stop()
+    df = load_default_data()
+    st.info("ℹ️ Showing default data from GitHub. Upload your own Excel to override.")
 
-# --------------------------
-# 📊 Graph (Revised)
-# --------------------------
+# Clean and normalize data
+if 'OFF PSP (VE V)' in df.columns:
+    df['OFF PSP (VE V)'] = pd.to_numeric(df['OFF PSP (VE V)'], errors='coerce').abs()
+
+if 'Hoop stress% of SMYS' in df.columns:
+    df['Hoop stress% of SMYS'] = pd.to_numeric(df['Hoop stress% of SMYS'].astype(str).str.replace('%', ''), errors='coerce')
+    if df['Hoop stress% of SMYS'].max() < 10:
+        df['Hoop stress% of SMYS'] *= 100
+
+# Define dropdown options
 plot_columns = {
     'Depth (mm)': 'Depth (mm)',
     'OFF PSP (VE V)': 'OFF PSP (-ve Volt)',
@@ -104,27 +57,31 @@ plot_columns = {
     'Pipe Age': 'Pipe Age'
 }
 
-selected_col = st.selectbox("Select a parameter to compare with Stationing:", list(plot_columns.keys()))
+selected_col = st.selectbox("📌 Select a parameter to compare with Stationing:", list(plot_columns.keys()))
 label = plot_columns[selected_col]
 
+# Build graph
 fig = go.Figure()
 fig.add_trace(go.Scatter(
-    x=full_df['Stationing (m)'],
-    y=full_df[selected_col],
+    x=df['Stationing (m)'],
+    y=df[selected_col],
     mode='lines+markers',
     name=label,
     line=dict(width=2),
     marker=dict(size=6)
 ))
 
+# Add threshold lines
 if label == 'Hoop Stress (% of SMYS)':
-    fig.add_shape(type='line', x0=full_df['Stationing (m)'].min(), x1=full_df['Stationing (m)'].max(),
+    fig.add_shape(type='line', x0=df['Stationing (m)'].min(), x1=df['Stationing (m)'].max(),
                   y0=60, y1=60, line=dict(color='red', dash='dash'))
+
 elif label == 'OFF PSP (-ve Volt)':
     for yval in [0.85, 1.2]:
-        fig.add_shape(type='line', x0=full_df['Stationing (m)'].min(), x1=full_df['Stationing (m)'].max(),
+        fig.add_shape(type='line', x0=df['Stationing (m)'].min(), x1=df['Stationing (m)'].max(),
                       y0=yval, y1=yval, line=dict(color='red', dash='dash'))
 
+# Final layout
 fig.update_layout(
     title=f"Stationing vs {label}",
     xaxis_title="Stationing (m)",
@@ -136,23 +93,15 @@ fig.update_layout(
     margin=dict(l=60, r=40, t=50, b=60)
 )
 
+# Display
 st.plotly_chart(fig, use_container_width=True)
 
+# Download button
 html_buffer = io.StringIO()
 pio.write_html(fig, file=html_buffer, include_plotlyjs='cdn')
-st.download_button("⬇️ Download High-Quality Graph as HTML", html_buffer.getvalue(), f"{label.replace(' ', '_')}_graph.html", "text/html")
-
-# --------------------------
-# 📄 Table Section
-# --------------------------
-st.subheader("🔥 Top 50 High-Risk Locations")
-st.dataframe(top50_df[['Stationing (m)', 'RiskScore', 'RiskCategory',
-                       'Hoop stress% of SMYS', 'OFF PSP (VE V)',
-                       'Distance from Pump(KM)', 'Soil Resistivity (Ω-cm)',
-                       'Pipe Age', 'CoatingType']], use_container_width=True)
-
-# --------------------------
-# 📥 Downloads
-# --------------------------
-csv = top50_df.to_csv(index=False).encode('utf-8')
-st.download_button("⬇️ Download Top 50 CSV", csv, "Top_50_SCC_Risks.csv", "text/csv")
+st.download_button(
+    label="⬇️ Download Graph as HTML",
+    data=html_buffer.getvalue(),
+    file_name=f"{label.replace(' ', '_')}_graph.html",
+    mime="text/html"
+)
