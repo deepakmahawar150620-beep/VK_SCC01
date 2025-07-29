@@ -17,7 +17,7 @@ def load_excel(file=None):
     if file is not None:
         df = pd.read_excel(file, engine="openpyxl")
     else:
-        url = "https://raw.githubusercontent.com/deepakmahawar150620-beep/VK_Section_SCC/main/Pipeline_VK_Data.xlsx"
+        url = "https://raw.githubusercontent.com/deepakmahawar150620-beep/VK_Section_SCC/main/Pipeline_Data.xlsx"
         df = pd.read_excel(url, engine="openpyxl")
     df.columns = df.columns.str.strip()
     return df
