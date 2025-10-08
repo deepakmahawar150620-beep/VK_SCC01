@@ -11,7 +11,7 @@ from folium.plugins import MarkerCluster
 # --------------------------
 # PAGE CONFIG
 # --------------------------
-st.set_page_config(page_title="📊 SCC Risk Graph Explorer", layout="centered")
+st.set_page_config(page_title="📊 Stress Corrosion assessment", layout="centered")
 st.title("📈 SCC Risk Graph Explorer")
 
 # --------------------------
